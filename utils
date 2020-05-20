@@ -1,0 +1,76 @@
+def xgb_cv(data, learning_rate, subsample, colsample_bytree, gamma,
+           min_child_weight, max_depth, tweedie_variance_power, num_boost_round):
+     
+     from bayes_opt import BayesianOptimization
+     import xgboost as xgb
+     
+    """xgboost cross validatio"""
+    xgbparams = {'eval_metric': 'tweedie-nloglik@' + str(np.round(tweedie_variance_power, 2)),
+                 'objective': 'reg:tweedie',
+                 'nthread': 4,
+                 'learning_rate': learning_rate,
+                 'max_depth': int(max_depth),
+                 'subsample': max(min(subsample, 1), 0),
+                 'colsample_bytree': max(min(colsample_bytree, 1), 0),
+                 'gamma': gamma,
+                 'min_child_weight': int(min_child_weight),
+                 'seed': 1001}
+    folds = 4
+    log_file = open('/xgb_hp_bo.log', 'a')
+    print("\n New Run", file=log_file)
+    print("\n Search parameters (%d-fold validation):\n %s" % (folds, xgbparams), file=log_file)
+
+    cv_result = xgb.cv(xgbparams,
+                       data,
+                       num_boost_round,
+                       nfold=folds,
+                       # stop the training when validation scores have not improved for 10 estimators
+                       early_stopping_rounds=10,
+                       metrics='tweedie-nloglik@' + str(np.round(tweedie_variance_power, 2)),
+                       verbose_eval=10,
+                       seed=1367)
+    val_score = -1.0 * cv_result['test-tweedie-nloglik@' + str(np.round(tweedie_variance_power, 2)) + '-mean'].iloc[-1]
+    train_score = -1.0 * cv_result['train-tweedie-nloglik@' + str(np.round(tweedie_variance_power, 2)) + '-mean'].iloc[
+        -1]
+
+    print('\n Stopped after %d iterations with train-deviance  = %f val-deviance = %f ( diff = %f )' %
+          (len(cv_result), train_score, val_score, (train_score - val_score)), file=log_file)
+    log_file.flush()
+    return val_score
+
+
+def optimize_xgb(data, num_boost_round, pbounds, n_iter, acq, kappa, init_points, param_dict_name):
+    """Apply Bayesian Optimization to xgboost parameters."""
+
+    def xgb_crossval(learning_rate, subsample, colsample_bytree, min_child_weight, max_depth,
+                     tweedie_variance_power, gamma=None):
+        """Wrapper of xgboost cross validation"""
+        return xgb_cv(learning_rate=learning_rate,
+                      subsample=subsample,
+                      colsample_bytree=colsample_bytree,
+                      gamma=gamma,
+                      min_child_weight=min_child_weight,
+                      max_depth=max_depth,
+                      tweedie_variance_power=tweedie_variance_power,
+                      data=data,
+                      num_boost_round=num_boost_round
+                      )
+
+    optimizer = BayesianOptimization(xgb_crossval, pbounds)
+
+    optimizer.maximize(n_iter=n_iter, acq=acq, kappa=kappa, init_points=init_points)
+    log_file = open('/xgb_hp_bo.log', 'a')
+
+    best_params = optimizer.max['params']
+    save_obj(best_params, "/data/02_intermediate/" + str(param_dict_name))
+
+    print("Final result:", optimizer.max, file=log_file)
+    print("Final result:", optimizer.max)
+    log_file.flush()
+
+
+
+def save_obj(obj, path):
+    """save objects using pickle dump"""
+    with open(path, 'wb') as f:
+        pickle.dump(obj, f, pickle.HIGHEST_PROTOCOL)
